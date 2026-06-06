@@ -1,24 +1,60 @@
 # ternary-prune
 
-*What do you cut when every weight is already just a trit?*
+*Weight pruning for ternary networks. The question isn't "which weights to remove?" — it's "which {-1, +1} weights should become 0?"*
 
----
+## Why This Exists
 
-In float networks, pruning means zeroing small weights. In ternary networks, every nonzero weight is ±1 — they're all the same magnitude. So what do you prune?
+In float networks, pruning means setting small weights to zero. In ternary networks, all non-zero weights have the same magnitude (±1). So "magnitude pruning" doesn't apply the same way — you can't just threshold by |w|. Instead, ternary pruning asks: *which weights contribute least to the network's output?*
 
-**Uncertainty.** You prune the weights that are *least sure* about their sign. The ones that flip between -1 and +1 most often during training. The ones whose gradient signal is weakest. The rows and columns that contribute least to the output.
+This crate implements five pruning strategies, each answering that question differently, plus a scheduled pruning regime that gradually increases sparsity during training.
 
-This crate implements five pruning strategies:
-- **Magnitude pruning** (flip-count based) — weights with highest flip counts are most uncertain
-- **Gradient pruning** — weights with near-zero accumulated gradient have no strong direction
-- **Structured row pruning** — remove entire low-norm rows
-- **Structured column pruning** — remove entire low-norm columns
-- **Random pruning** — baseline comparison
+## Pruning Strategies
 
-Plus a `PruneSchedule` for iterative pruning (gradual sparsity increase) and L1 norm utilities for row/column importance scoring.
+### 1. Magnitude Prune (`magnitude_prune`)
+Uses accumulated flip counts — weights that change sign frequently during training are uncertain. Prune the most uncertain weights first.
 
-9 tests covering all pruning strategies, statistics, norms, and scheduling.
+### 2. Gradient Prune (`gradient_prune`)
+Uses gradient magnitude. Weights with near-zero accumulated gradients have minimal impact on the loss. Prune them.
 
-Part of [SuperInstance](https://github.com/SuperInstance/SuperInstance).
+### 3. Structured Row Prune (`structured_prune_row`)
+Remove entire rows (output neurons) based on L1 norm. A row with low L1 norm contributes little.
 
-License: MIT
+### 4. Structured Column Prune (`structured_prune_col`)
+Remove entire columns (input features) based on L1 norm.
+
+### 5. Random Prune (`random_prune`)
+Baseline: randomly set weights to 0. Useful for ablation studies.
+
+### Scheduled Pruning (`PruneSchedule`)
+Gradually increase sparsity over training: start at 0%, ramp to target over N epochs.
+
+## Usage
+
+```rust
+use ternary_prune::*;
+
+let mut weights: Vec<i8> = vec![-1, 1, 0, -1, 1, 0, -1, 1];
+let flip_counts: Vec<usize> = vec![2, 15, 0, 3, 12, 0, 1, 8];
+
+// Prune weights that flip most often (30% sparsity target)
+let stats = magnitude_prune(&mut weights, &flip_counts, 0.3);
+println!("Pruned {} weights to 0", stats.zeros_added);
+
+// Structured pruning — keep only top 3 rows
+let mut row_weights = vec![-1i8, 1, 0, -1, 1, 1, -1, 1, 0, 1, -1, 1];
+let row_norms: Vec<f64> = vec![2.0, 3.0, 2.0];
+let stats = structured_prune_row(&mut row_weights, 3, 2, &row_norms, 2);
+```
+
+## The Deeper Insight
+
+Ternary pruning is secretly a form of *feature selection*. When you prune a column (input feature) to all zeros, you've removed that feature entirely — the network no longer sees it. This means ternary networks with pruning can discover which features matter, without separate feature importance analysis.
+
+The connection to `ternary-quantize` is direct: quantization converts float → ternary, pruning converts ternary → sparser ternary. Together they form the compression pipeline for deployment.
+
+## Related Crates
+
+- `ternary-distill` — Knowledge distillation (compression via teaching)
+- `ternary-quantize` — Float → ternary quantization
+- `ternary-checkpoint` — Save pruned model checkpoints
+- `ternary-accumulator` — Gradient tracking for informed pruning
